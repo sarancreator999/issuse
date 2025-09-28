@@ -10,55 +10,46 @@ from firebase_admin import credentials, firestore, storage
 import jwt  # PyJWT library
 import base64
 
-# --- Flask செயலியை அமைத்தல் ---
+# --- Flask App Setup ---
 app = Flask(__name__)
-# முக்கியம்: பாதுகாப்பு காரணங்களுக்காக இந்த SECRET_KEY-ஐ சிக்கலான, நீளமான ஒன்றாக மாற்றவும்.
+# IMPORTANT: For security, change this SECRET_KEY to something long and complex.
 app.config['SECRET_KEY'] = 'change-this-to-a-very-long-and-random-secret-key'
 CORS(app)
 
-# --- Firebase அமைத்தல் ---
+# --- Firebase Initialization ---
 try:
-    # serviceAccountKey.json கோப்பு உங்கள் app.py இருக்கும் இடத்திலேயே இருக்க வேண்டும்.
+    # Ensure serviceAccountKey.json is in the same directory as app.py
     cred = credentials.Certificate("serviceAccountKey.json")
     
-    # முக்கியம்: 'your-project-id.appspot.com' என்பதை உங்கள் Firebase Storage பக்கத்தில் உள்ள URL உடன் மாற்றவும்.
+    # IMPORTANT: Replace 'your-project-id.appspot.com' with the URL from your Firebase Storage page.
     firebase_admin.initialize_app(cred, {
         'storageBucket': 'your-project-id.appspot.com' 
     })
     
-    # Firestore மற்றும் Storage-ஐ இணைக்கிறோம்
+    # Connect to Firestore and Storage
     db = firestore.client()
     bucket = storage.bucket()
-    print("✅ Firebase வெற்றிகரமாக இணைக்கப்பட்டது.")
+    print("✅ Firebase initialized successfully.")
 except Exception as e:
-    print(f"🔥 Firebase-ஐ இணைப்பதில் சிக்கல்: {e}")
+    print(f"🔥 Firebase initialization failed: {e}")
     db = None
     bucket = None
 # -----------------------------
 
-# --- HTML பக்கங்களுக்கான வழிகள் (Routes) ---
+# --- HTML Page Routes ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# இந்த வழிகள் உங்களுக்கு தனி login/register பக்கங்கள் இருந்தால் தேவை.
-# @app.route('/login')
-# def login_page():
-#     return render_template('login.html')
-
-# @app.route('/register')
-# def register_page():
-#     return render_template('register.html')
-
 # --- API Routes ---
 
-# 1. பயனர் பதிவு செய்வதற்கான வழி
+# 1. User Registration Route
 @app.route('/api/register', methods=['POST'])
 def register_user():
-    if not db: return jsonify({'message': 'Database இணைக்கப்படவில்லை.'}), 500
+    if not db: return jsonify({'message': 'Database not connected.'}), 500
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password') or not data.get('name'):
-        return jsonify({'message': 'Name, Email மற்றும் Password தேவை.'}), 400
+        return jsonify({'message': 'Name, Email, and Password are required.'}), 400
 
     email = data['email']
     password = data['password']
@@ -66,11 +57,11 @@ def register_user():
     
     users_ref = db.collection('users')
     
-    # இந்த email ஏற்கனவே உள்ளதா என சரிபார்க்கிறோம்
+    # Check if this email already exists
     if users_ref.document(email).get().exists:
-        return jsonify({'message': 'இந்த Email ஏற்கனவே பதிவு செய்யப்பட்டுள்ளது.'}), 409
+        return jsonify({'message': 'This Email is already registered.'}), 409
 
-    # கடவுச்சொல்லை பாதுகாப்பாக hash செய்கிறோம்
+    # Securely hash the password
     hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
     
     new_user = { 
@@ -81,122 +72,157 @@ def register_user():
     }
     users_ref.document(email).set(new_user)
     
-    # பதிவு செய்தவுடன், பயனரை தானாக உள்நுழைய வைக்க Token உருவாக்குகிறோம்
+    # Create a token to automatically log the user in after registration
     token = jwt.encode({
         'email': email,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24) # 24 மணிநேரம் செல்லுபடியாகும்
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24) # Token is valid for 24 hours
     }, app.config['SECRET_KEY'], algorithm="HS256")
     
-    return jsonify({'message': 'பயனர் வெற்றிகரமாக பதிவு செய்யப்பட்டார்!', 'token': token, 'name': name}), 201
+    return jsonify({'message': 'User registered successfully!', 'token': token, 'name': name}), 201
 
-# 2. பயனர் உள்நுழைவதற்கான வழி
+# 2. User Login Route
 @app.route('/api/login', methods=['POST'])
 def login_user():
-    if not db: return jsonify({'message': 'Database இணைக்கப்படவில்லை.'}), 500
+    if not db: return jsonify({'message': 'Database not connected.'}), 500
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
-        return jsonify({'message': 'Email மற்றும் Password தேவை.'}), 400
+        return jsonify({'message': 'Email and Password are required.'}), 400
 
     email, password = data['email'], data['password']
     user_doc_ref = db.collection('users').document(email)
     user_doc = user_doc_ref.get()
 
     if not user_doc.exists or not check_password_hash(user_doc.to_dict()['password_hash'], password):
-        return jsonify({'message': 'தவறான Email அல்லது Password.'}), 401
+        return jsonify({'message': 'Invalid Email or Password.'}), 401
     
-    # உள்நுழைவு வெற்றிகரமாக இருந்தால் Token உருவாக்குகிறோம்
+    # Create a token if login is successful
     token = jwt.encode({
         'email': email,
         'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
     }, app.config['SECRET_KEY'], algorithm="HS256")
     
     user_data = user_doc.to_dict()
-    return jsonify({'message': 'உள்நுழைவு வெற்றி!', 'token': token, 'name': user_data.get('name')}), 200
+    return jsonify({'message': 'Login successful!', 'token': token, 'name': user_data.get('name')}), 200
 
-# 3. பாதுகாக்கப்பட்ட வழிகளுக்கான Token சரிபார்ப்பு (Decorator)
+# 3. Token Verification Decorator for Protected Routes
 def token_required(f):
     def decorated(*args, **kwargs):
         token = None
         if 'Authorization' in request.headers:
-            # Header 'Bearer <token>' வடிவத்தில் இருக்கும்
+            # Header format is 'Bearer <token>'
             token = request.headers['Authorization'].split(" ")[1]
         
         if not token: 
-            return jsonify({'message': 'அங்கீகார Token இல்லை!'}), 401
+            return jsonify({'message': 'Authentication Token is missing!'}), 401
         
         try:
-            # Token சரியானதா என சரிபார்க்கிறோம்
+            # Verify the token is valid
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user_email = data['email']
         except Exception:
-            return jsonify({'message': 'Token தவறானது அல்லது காலாவதியானது!'}), 401
+            return jsonify({'message': 'Token is invalid or has expired!'}), 401
         
         return f(current_user_email, *args, **kwargs)
     
     decorated.__name__ = f.__name__
     return decorated
 
-# 4. புகார்களைப் பதிவு செய்வதற்கான வழி (பாதுகாக்கப்பட்டது)
+# 4. Route to Submit a Report (Protected)
 @app.route('/api/report', methods=['POST'])
 @token_required
 def handle_report(current_user_email):
-    if not db or not bucket: return jsonify({'message': 'Database/Storage இணைக்கப்படவில்லை.'}), 500
+    if not db or not bucket: return jsonify({'message': 'Database/Storage not connected.'}), 500
     
     data = request.get_json()
     if not data or not data.get('description') or not data.get('category') or not data.get('location'):
-        return jsonify({'message': 'தேவையான വിവരங்கள் இல்லை.'}), 400
+        return jsonify({'message': 'Required information is missing.'}), 400
     
     image_data_url = data.get('photo')
     image_url = ''
     
-    # Base64 படத்தைப் பெற்று Firebase Storage-ல் சேமிக்கிறோம்
+    # Receive Base64 image and save to Firebase Storage
     if image_data_url and image_data_url.startswith('data:image'):
         try:
             header, encoded = image_data_url.split(",", 1)
             image_format = header.split("/")[1].split(";")[0]
             image_data = base64.b64decode(encoded)
             
-            # படத்திற்கு ஒரு தனித்துவமான பெயரை உருவாக்குகிறோம்
+            # Create a unique filename for the image
             image_filename = f"reports/{uuid.uuid4()}.{image_format}"
             blob = bucket.blob(image_filename)
             
             blob.upload_from_string(image_data, content_type=f'image/{image_format}')
-            blob.make_public() # படத்தை பொதுவில் அணுகும்படி மாற்றுகிறோம்
+            blob.make_public() # Make the image publicly accessible
             image_url = blob.public_url
         except Exception as e:
-            print(f"🔥 படத்தைப் பதிவேற்றுவதில் சிக்கல்: {e}")
-            image_url = '' # சிக்கல் ஏற்பட்டால் ખાલી URL
+            print(f"🔥 Image upload failed: {e}")
+            image_url = '' # Empty URL if there's an error
             
     report_id = str(uuid.uuid4())
     
-    # புகாரை Firestore-ல் சேமிக்கிறோம்
+    # Save the report to Firestore
     new_report = {
         'report_id': report_id,
         'description': data['description'],
         'category': data['category'],
         'location': data['location'],
-        'place': data.get('place', 'தெரியவில்லை'),
+        'place': data.get('place', 'Unknown'),
         'timestamp': datetime.datetime.utcnow().isoformat(),
-        'status': 'received', # புகாரின் தற்போதைய நிலை
-        'reported_by': current_user_email, # புகாரளித்தவர் யார்?
-        'photo_url': image_url # படத்தின் URL
+        'status': 'received', # The current status of the report
+        'reported_by': current_user_email, # Who reported it?
+        'photo_url': image_url # URL of the image
     }
     
     db.collection('reports').document(report_id).set(new_report)
-    print(f"புதிய புகார் {current_user_email} மூலம் பெறப்பட்டது: {report_id}")
-    return jsonify({'message': 'புகார் வெற்றிகரமாக சமர்ப்பிக்கப்பட்டது!', 'report_id': report_id}), 201
+    print(f"New report received from {current_user_email}: {report_id}")
+    return jsonify({'message': 'Report submitted successfully!', 'report_id': report_id}), 201
 
-# 5. எல்லா புகார்களையும் பெறுவதற்கான வழி (பொது)
+# --- NEW FEATURE ---
+# 5. Route to Update a Report's Status (Protected)
+#    (புதிய வசதி: புகாரின் நிலையை மாற்றுவதற்கான வழி)
+@app.route('/api/report/<string:report_id>/status', methods=['PATCH'])
+@token_required
+def update_report_status(current_user_email, report_id):
+    if not db: return jsonify({'message': 'Database not connected.'}), 500
+
+    data = request.get_json()
+    new_status = data.get('status')
+
+    if not new_status:
+        return jsonify({'message': 'New status is required.'}), 400
+
+    try:
+        report_ref = db.collection('reports').document(report_id)
+        
+        # Check if the report exists before trying to update it
+        if not report_ref.get().exists:
+            return jsonify({'message': 'Report not found.'}), 404
+
+        # Update the 'status' field of the document
+        report_ref.update({'status': new_status})
+        
+        # In a real app, you might also log who changed the status and when
+        # report_ref.update({'status_last_updated_by': current_user_email})
+
+        print(f"Report {report_id} status updated to '{new_status}' by {current_user_email}")
+        return jsonify({'message': f'Report status successfully updated to {new_status}.'}), 200
+
+    except Exception as e:
+        print(f"🔥 Failed to update status for report {report_id}: {e}")
+        return jsonify({'message': 'Failed to update report status.'}), 500
+# --- END OF NEW FEATURE ---
+
+# 6. Route to Get All Reports (Public)
 @app.route('/api/reports', methods=['GET'])
 def get_reports():
-    if not db: return jsonify({'message': 'Database இணைக்கப்படவில்லை.'}), 500
+    if not db: return jsonify({'message': 'Database not connected.'}), 500
     try:
-        # புகார்களை சமீபத்தியது முதலில் வருமாறு வரிசைப்படுத்துகிறோம்
+        # Order reports with the newest ones first
         docs_stream = db.collection('reports').order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
         reports_list = [doc.to_dict() for doc in docs_stream]
         return jsonify(reports_list), 200
     except Exception as e:
-        return jsonify({'message': f'புகார்களைப் பெறுவதில் சிக்கல்: {e}'}), 500
+        return jsonify({'message': f'Failed to retrieve reports: {e}'}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
